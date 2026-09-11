@@ -4,7 +4,7 @@
 
 **Bloat as code:**
 
-Adapt your `wanted.txt` and `unwanted.txt` and reproduce your dream **stack** in seconds.
+Evolve your `wanted.txt` and `unwanted.txt` then reproduce that dream **stack** in seconds.
 
 ## Setup
 
@@ -14,9 +14,9 @@ chmod +x ~/.local/bin/omack
 omack init
 ```
 
-Lists: `~/.config/omack/` (`$XDG_CONFIG_HOME/omack` if set).
+`wanted.txt` and `unwanted.txt` are created in `~/.config/omack/`
 
-## Commands
+## Usage
 
 ```
 omack init [--force]       # wanted.txt = explicitly installed packages (pacman -Qqe)
@@ -32,10 +32,10 @@ omack version
 
 Edit the two lists, preview with `omack update --dry-run`, then `omack update`.
 
-## Rules
+## Behaviour
 
-- `wanted.txt` — must be installed (`omarchy pkg add`)
-- `unwanted.txt` — must be gone (`omarchy pkg drop`)
+- `wanted.txt` — will be installed (`omarchy pkg add`)
+- `unwanted.txt` — will be gone (`omarchy pkg drop`)
 - Everything else is left alone (Omarchy itself, dependencies)
 - A name in both files is an error
 - Lines starting with `#` and blank lines are ignored
