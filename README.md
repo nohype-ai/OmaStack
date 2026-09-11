@@ -4,7 +4,9 @@
 
 **Just `omack update`**
 
-**Config as code:** You adapt your `wanted.txt` and `unwanted.txt` and reproduce your dream stack in minutes on any Omarchy install.
+**Config as code:**
+
+You adapt your `wanted.txt` and `unwanted.txt` and reproduce your dream stack in minutes on any Omarchy install.
 
 ## Setup
 
