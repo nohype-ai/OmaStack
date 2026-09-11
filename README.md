@@ -2,9 +2,9 @@
 
 ### Bring Your Own Bloat to Omarchy: `omack update`
 
-**Config as code:**
+**Bloat as code:**
 
-You adapt your `wanted.txt` and `unwanted.txt` and reproduce your dream **stack** in seconds on any Omarchy system.
+Adapt your `wanted.txt` and `unwanted.txt` and reproduce your dream **stack** in seconds.
 
 ## Setup
 
