@@ -1,8 +1,6 @@
 # OmaStack
 
-### Install Your Own Bloat on Omarchy.
-
-**Just `omack update`**
+### Bring Your Own Bloat to Omarchy: `omack update`
 
 **Config as code:**
 
