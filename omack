@@ -1,0 +1,149 @@
+#!/bin/bash
+set -euo pipefail
+
+VERSION="0.1.0"
+DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omack"
+WANTED="$DIR/wanted.txt"
+UNWANTED="$DIR/unwanted.txt"
+
+usage() {
+  cat <<EOF
+omack $VERSION
+usage: omack <command> [options]
+
+commands:
+  init [--force]       write lists from explicitly installed packages
+  list                 print explicitly installed packages
+  status               pending update actions and list conflicts
+  update [--dry-run]   apply wanted.txt / unwanted.txt
+  help                 show this help
+  version              print version
+
+requires: Omarchy (omarchy pkg add/drop), pacman
+
+lists: $DIR
+EOF
+}
+
+filter() {
+  [[ -f "$1" ]] || return 0
+  grep -vE '^\s*(#|$)' "$1" | awk '{print $1}' | sort -u
+}
+
+have() { pacman -Q "$1" &>/dev/null; }
+
+print_block() {
+  local title="$1"
+  shift
+  if (($#)); then
+    echo "$title ($#):"
+    printf '  %s\n' "$@"
+  else
+    echo "$title (0):"
+    echo "  (none)"
+  fi
+}
+
+load_plan() {
+  [[ -f "$WANTED" ]] || { echo "missing $WANTED — run: omack init" >&2; exit 1; }
+  mkdir -p "$DIR"
+  [[ -f "$UNWANTED" ]] || : > "$UNWANTED"
+
+  conflicts=()
+  installs=()
+  removes=()
+
+  local pkg
+  while read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    conflicts+=("$pkg")
+  done < <(comm -12 <(filter "$WANTED") <(filter "$UNWANTED") || true)
+
+  local conflict_set=""
+  ((${#conflicts[@]})) && conflict_set=$(printf '%s\n' "${conflicts[@]}")
+
+  is_conflict() {
+    [[ -n "$conflict_set" ]] && grep -Fxq "$1" <<<"$conflict_set"
+  }
+
+  while read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    is_conflict "$pkg" && continue
+    have "$pkg" || installs+=("$pkg")
+  done < <(filter "$WANTED")
+
+  while read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    is_conflict "$pkg" && continue
+    have "$pkg" && removes+=("$pkg")
+  done < <(filter "$UNWANTED")
+}
+
+cmd_init() {
+  local force=0
+  case "${1:-}" in
+    --force) force=1 ;;
+    "") ;;
+    *) echo "usage: omack init [--force]" >&2; exit 1 ;;
+  esac
+
+  if [[ $force -eq 0 && ( -e "$WANTED" || -e "$UNWANTED" ) ]]; then
+    echo "lists already exist in $DIR — pass --force to overwrite" >&2
+    exit 1
+  fi
+
+  mkdir -p "$DIR"
+  pacman -Qqe | sort > "$WANTED"
+  : > "$UNWANTED"
+  echo "wrote $WANTED ($(wc -l < "$WANTED") packages)"
+  echo "wrote $UNWANTED (empty)"
+}
+
+cmd_list() {
+  pacman -Qqe | sort
+}
+
+cmd_status() {
+  load_plan
+  print_block conflicts "${conflicts[@]+"${conflicts[@]}"}"
+  print_block install "${installs[@]+"${installs[@]}"}"
+  print_block remove "${removes[@]+"${removes[@]}"}"
+}
+
+cmd_update() {
+  local dry=0
+  case "${1:-}" in
+    --dry-run) dry=1 ;;
+    "") ;;
+    *) echo "usage: omack update [--dry-run]" >&2; exit 1 ;;
+  esac
+
+  load_plan
+
+  if ((${#conflicts[@]})); then
+    print_block conflicts "${conflicts[@]}" >&2
+    echo "resolve conflicts before update" >&2
+    exit 1
+  fi
+
+  echo "install (${#installs[@]}): ${installs[*]:-(none)}"
+  echo "remove  (${#removes[@]}): ${removes[*]:-(none)}"
+
+  if [[ $dry -eq 1 ]]; then
+    echo "dry-run — no changes"
+    exit 0
+  fi
+
+  ((${#installs[@]})) && omarchy pkg add "${installs[@]}"
+  ((${#removes[@]})) && omarchy pkg drop "${removes[@]}"
+}
+
+case "${1:-}" in
+  init) shift; cmd_init "${1:-}" ;;
+  list) cmd_list ;;
+  status) cmd_status ;;
+  update) shift; cmd_update "${1:-}" ;;
+  help|-h|--help) usage ;;
+  version|-v|--version) echo "$VERSION" ;;
+  *) usage >&2; exit 1 ;;
+esac
