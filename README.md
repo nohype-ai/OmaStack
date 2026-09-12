@@ -9,9 +9,7 @@ Evolve your `wanted.txt` and `unwanted.txt` then reproduce that dream **stack** 
 ## Setup
 
 ```bash
-cp omack ~/.local/bin/
-chmod +x ~/.local/bin/omack
-omack init
+curl -fsSL https://omastack.dev/install.sh | bash
 ```
 
 `wanted.txt` and `unwanted.txt` are created in `~/.config/omack/`
