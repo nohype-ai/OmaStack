@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omack"
+CONFIG="$DIR/config.toml"
 WANTED="$DIR/wanted.txt"
 UNWANTED="$DIR/unwanted.txt"
 
@@ -16,13 +17,127 @@ commands:
   list                 print explicitly installed packages
   status               pending update actions and list conflicts
   update [--dry-run]   apply wanted.txt / unwanted.txt
+  update-repos         fetch, then clone, push, or pull repos from the stack
   help                 show this help
   version              print version
 
 requires: Omarchy (omarchy pkg add/drop), pacman
 
 lists: $DIR
+stack folder: $CONFIG (stack_path)
+repos folder: <stack>/omastack.toml ([repos] folder)
 EOF
+}
+
+# toml_get FILE SECTION KEY
+# SECTION "" is the top of the file, before any [table].
+toml_get() {
+  local file="$1" section="$2" key="$3"
+  [[ -f "$file" ]] || return 0
+  awk -v section="$section" -v key="$key" '
+    function unquote(v) {
+      sub(/^[[:space:]]+/, "", v)
+      sub(/[[:space:]]+$/, "", v)
+      if (v ~ /^".*"$/) {
+        v = substr(v, 2, length(v) - 2)
+        gsub(/\\"/, "\"", v)
+        gsub(/\\\\/, "\\", v)
+      } else if (v ~ /^'\''.*'\''$/) {
+        v = substr(v, 2, length(v) - 2)
+      }
+      return v
+    }
+    /^[[:space:]]*($|#)/ { next }
+    /^[[:space:]]*\[/ {
+      s = $0
+      sub(/^[[:space:]]*\[/, "", s)
+      sub(/\].*$/, "", s)
+      gsub(/[[:space:]]/, "", s)
+      current = s
+      next
+    }
+    {
+      eq = index($0, "=")
+      if (eq == 0) next
+      k = substr($0, 1, eq - 1)
+      v = substr($0, eq + 1)
+      gsub(/[[:space:]]/, "", k)
+      if (current == section && k == key) {
+        print unquote(v)
+        exit
+      }
+    }
+  ' "$file"
+}
+
+expand_tilde() {
+  local value="$1"
+  if [[ "$value" == "~" ]]; then
+    printf '%s' "$HOME"
+  elif [[ "$value" == "~/"* ]]; then
+    printf '%s' "$HOME/${value:2}"
+  else
+    printf '%s' "$value"
+  fi
+}
+
+save_stack_path() {
+  local path="$1" tmp
+  mkdir -p "$DIR"
+  [[ -e "$CONFIG" ]] || : > "$CONFIG"
+  tmp="$(mktemp)"
+  awk -v path="$path" '
+    BEGIN { found = 0 }
+    /^[[:space:]]*stack_path[[:space:]]*=/ {
+      gsub(/\\/, "\\\\", path)
+      gsub(/"/, "\\\"", path)
+      print "stack_path = \"" path "\""
+      found = 1
+      next
+    }
+    { print }
+    END {
+      if (!found) {
+        gsub(/\\/, "\\\\", path)
+        gsub(/"/, "\\\"", path)
+        print "stack_path = \"" path "\""
+      }
+    }
+  ' "$CONFIG" > "$tmp"
+  mv "$tmp" "$CONFIG"
+}
+
+# Ask when the stack folder is not already a directory in config.toml.
+# help and version do not call this.
+resolve_stack() {
+  local saved="" answer=""
+  saved="$(toml_get "$CONFIG" "" stack_path || true)"
+  if [[ -n "$saved" ]]; then
+    saved="$(expand_tilde "$saved")"
+    if [[ -d "$saved" ]]; then
+      STACK="$(cd "$saved" && pwd)"
+      return 0
+    fi
+    echo "Saved stack folder does not exist: $saved" >&2
+  else
+    echo "Stack folder is not set." >&2
+  fi
+
+  if [[ ! -t 0 ]]; then
+    echo "Could not retrieve the stack folder from $CONFIG" >&2
+    exit 1
+  fi
+
+  printf 'Enter the path to your stack folder: ' >&2
+  IFS= read -r answer || true
+  answer="$(expand_tilde "$answer")"
+  if [[ -z "$answer" || ! -d "$answer" ]]; then
+    echo "Could not retrieve the stack folder." >&2
+    exit 1
+  fi
+  STACK="$(cd "$answer" && pwd)"
+  save_stack_path "$STACK"
+  echo "Saved stack folder: $STACK" >&2
 }
 
 filter() {
@@ -138,12 +253,141 @@ cmd_update() {
   ((${#removes[@]})) && omarchy pkg drop "${removes[@]}"
 }
 
+record_issue() {
+  local issue="$1"
+  issue_messages+=("$(printf '📁 %s\n  🐙 %s\n  %s' "$repo_folder" "$repo_url" "$issue")")
+}
+
+cmd_update_repos() {
+  local stack_config="$STACK/omastack.toml"
+  if [[ ! -f "$stack_config" ]]; then
+    echo "No omastack.toml in the stack folder:" >&2
+    echo "  $stack_config" >&2
+    exit 1
+  fi
+
+  local repos_folder
+  repos_folder="$(toml_get "$stack_config" repos folder || true)"
+  if [[ -z "$repos_folder" ]]; then
+    echo "repos.folder is not set in $stack_config" >&2
+    exit 1
+  fi
+  repos_folder="$(expand_tilde "$repos_folder")"
+
+  local template="$STACK/git/repos-folder-template"
+  if [[ ! -d "$template" ]]; then
+    printf '⚠️ Warning: Skipping sync of git repos since repos folder template does not exist:\n%s\n' "$template"
+    return 0
+  fi
+
+  issue_messages=()
+  shopt -s globstar nullglob
+
+  local item relative_path relative_folder repo_url repo_name
+  local status_output upstream rev_list_output ahead behind
+  for item in "$template"/**/*; do
+    [[ -d "$item" ]] && continue
+
+    relative_path="${item#"${template}/"}"
+
+    if [[ "$(basename "$item")" != "git-repos.txt" ]]; then
+      printf '📄 The template contains an unrelated file that will be ignored: %s\n' "$relative_path"
+      continue
+    fi
+
+    relative_folder="$(dirname "$relative_path")"
+
+    while IFS= read -r repo_url || [[ -n "$repo_url" ]]; do
+      [[ -z "${repo_url//[[:space:]]/}" ]] && continue
+
+      repo_name="${repo_url##*/}"
+      repo_name="${repo_name%.git}"
+
+      if [[ "$relative_folder" == "." ]]; then
+        repo_folder="${repos_folder}/${repo_name}"
+      else
+        repo_folder="${repos_folder}/${relative_folder}/${repo_name}"
+      fi
+
+      printf '🐙 Updating repo %s ...\n' "$repo_name"
+
+      if [[ -d "$repo_folder" ]]; then
+        if git -C "$repo_folder" rev-parse --git-dir &>/dev/null; then
+          status_output="$(git -C "$repo_folder" status --porcelain 2>/dev/null || true)"
+          if [[ -n "$status_output" ]]; then
+            record_issue "⚠️  Has changes"
+          else
+            upstream="$(git -C "$repo_folder" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+            if [[ -z "$upstream" ]]; then
+              record_issue "⚠️  No remote tracking branch"
+            elif ! git -C "$repo_folder" fetch 2>&1; then
+              record_issue "🛑 Fetch failed"
+            else
+              rev_list_output="$(git -C "$repo_folder" rev-list --left-right --count 'HEAD...@{upstream}' 2>/dev/null || true)"
+              if [[ -n "$rev_list_output" ]]; then
+                IFS=$'\t' read -r ahead behind <<< "$rev_list_output"
+                ahead="${ahead:-0}"
+                behind="${behind:-0}"
+                if (( ahead > 0 && behind > 0 )); then
+                  record_issue "⚠️  Diverged: ↑${ahead} ahead AND ↓${behind} behind"
+                elif (( ahead > 0 )); then
+                  if git -C "$repo_folder" push 2>&1; then
+                    printf '  ✅ Pushed successfully\n'
+                  else
+                    record_issue "🛑 Push failed"
+                  fi
+                elif (( behind > 0 )); then
+                  if git -C "$repo_folder" pull 2>&1; then
+                    printf '  ✅ Pulled successfully\n'
+                  else
+                    record_issue "🛑 Pull failed"
+                  fi
+                fi
+              fi
+            fi
+          fi
+        elif [[ -z "$(ls -A "$repo_folder" 2>/dev/null)" ]]; then
+          if git clone "$repo_url" "$repo_folder" 2>&1; then
+            printf '  ✅ Cloned successfully\n'
+          else
+            record_issue "🛑 Clone failed"
+          fi
+        else
+          record_issue "⚠️  Expected repo folder exists and contains items yet is not a git repo"
+        fi
+      else
+        mkdir -p "$(dirname "$repo_folder")"
+        if git clone "$repo_url" "$repo_folder" 2>&1; then
+          printf '  ✅ Cloned successfully\n'
+        else
+          record_issue "🛑 Clone failed"
+        fi
+      fi
+    done < "$item"
+  done
+
+  if (( ${#issue_messages[@]} > 0 )); then
+    printf '\n🚨 The following repos need manual attention:\n'
+    local issue_message
+    for issue_message in "${issue_messages[@]}"; do
+      printf '%s\n' "$issue_message"
+    done
+    printf '\n'
+  fi
+}
+
 case "${1:-}" in
-  init) shift; cmd_init "${1:-}" ;;
-  list) cmd_list ;;
-  status) cmd_status ;;
-  update) shift; cmd_update "${1:-}" ;;
   help|-h|--help) usage ;;
   version|-v|--version) echo "$VERSION" ;;
+  init|list|status|update|update-repos)
+    resolve_stack
+    case "$1" in
+      init) shift; cmd_init "${1:-}" ;;
+      list) cmd_list ;;
+      status) cmd_status ;;
+      update) shift; cmd_update "${1:-}" ;;
+      update-repos) cmd_update_repos ;;
+    esac
+    ;;
   *) usage >&2; exit 1 ;;
 esac
