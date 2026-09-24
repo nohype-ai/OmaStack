@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="0.2.0"
-DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omack"
+VERSION="0.3.0"
+DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omastack"
 CONFIG="$DIR/config.toml"
-WANTED="$DIR/wanted.txt"
-UNWANTED="$DIR/unwanted.txt"
+WANTED=""
+UNWANTED=""
 
 usage() {
   cat <<EOF
@@ -23,8 +23,8 @@ commands:
 
 requires: Omarchy (omarchy pkg add/drop), pacman
 
-lists: $DIR
-stack folder: $CONFIG (stack_path)
+config: $CONFIG (stack_path)
+lists: <stack>/wanted.txt and <stack>/unwanted.txt
 repos folder: <stack>/omastack.toml ([repos] folder)
 EOF
 }
@@ -115,7 +115,7 @@ resolve_stack() {
   if [[ -n "$saved" ]]; then
     saved="$(expand_tilde "$saved")"
     if [[ -d "$saved" ]]; then
-      STACK="$(cd "$saved" && pwd)"
+      STACK="$(realpath -s -- "$saved")"
       return 0
     fi
     echo "Saved stack folder does not exist: $saved" >&2
@@ -135,9 +135,28 @@ resolve_stack() {
     echo "Could not retrieve the stack folder." >&2
     exit 1
   fi
-  STACK="$(cd "$answer" && pwd)"
+  STACK="$(realpath -s -- "$answer")"
   save_stack_path "$STACK"
   echo "Saved stack folder: $STACK" >&2
+}
+
+bind_lists() {
+  WANTED="$STACK/wanted.txt"
+  UNWANTED="$STACK/unwanted.txt"
+}
+
+# Create either list in the stack folder when it is missing.
+# An existing file is left as it is.
+ensure_lists() {
+  bind_lists
+  if [[ ! -e "$WANTED" ]]; then
+    pacman -Qqe | sort > "$WANTED"
+    echo "wrote $WANTED ($(wc -l < "$WANTED") packages)"
+  fi
+  if [[ ! -e "$UNWANTED" ]]; then
+    : > "$UNWANTED"
+    echo "wrote $UNWANTED (empty)"
+  fi
 }
 
 filter() {
@@ -160,9 +179,7 @@ print_block() {
 }
 
 load_plan() {
-  [[ -f "$WANTED" ]] || { echo "missing $WANTED — run: omack init" >&2; exit 1; }
-  mkdir -p "$DIR"
-  [[ -f "$UNWANTED" ]] || : > "$UNWANTED"
+  ensure_lists
 
   conflicts=()
   installs=()
@@ -202,12 +219,12 @@ cmd_init() {
     *) echo "usage: omack init [--force]" >&2; exit 1 ;;
   esac
 
+  bind_lists
   if [[ $force -eq 0 && ( -e "$WANTED" || -e "$UNWANTED" ) ]]; then
-    echo "lists already exist in $DIR — pass --force to overwrite" >&2
+    echo "lists already exist in $STACK — pass --force to overwrite" >&2
     exit 1
   fi
 
-  mkdir -p "$DIR"
   pacman -Qqe | sort > "$WANTED"
   : > "$UNWANTED"
   echo "wrote $WANTED ($(wc -l < "$WANTED") packages)"
@@ -383,10 +400,10 @@ case "${1:-}" in
     resolve_stack
     case "$1" in
       init) shift; cmd_init "${1:-}" ;;
-      list) cmd_list ;;
+      list) ensure_lists; cmd_list ;;
       status) cmd_status ;;
       update) shift; cmd_update "${1:-}" ;;
-      update-repos) cmd_update_repos ;;
+      update-repos) ensure_lists; cmd_update_repos ;;
     esac
     ;;
   *) usage >&2; exit 1 ;;
