@@ -123,13 +123,20 @@ resolve_stack() {
     echo "Stack folder is not set." >&2
   fi
 
-  if [[ ! -t 0 ]]; then
+  # /dev/tty still works when omack is started by `curl | bash`,
+  # because that pipe is stdin and the terminal is not.
+  local prompt_from=""
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    prompt_from=/dev/tty
+  elif [[ -t 0 ]]; then
+    prompt_from=/dev/stdin
+  else
     echo "Could not retrieve the stack folder from $CONFIG" >&2
     exit 1
   fi
 
-  printf 'Enter the path to your stack folder: ' >&2
-  IFS= read -r answer || true
+  printf 'Enter the path to your stack folder: ' >"$prompt_from"
+  IFS= read -r answer <"$prompt_from" || true
   answer="$(expand_tilde "$answer")"
   if [[ -z "$answer" || ! -d "$answer" ]]; then
     echo "Could not retrieve the stack folder." >&2
@@ -222,7 +229,7 @@ cmd_init() {
   bind_lists
   if [[ $force -eq 0 && ( -e "$WANTED" || -e "$UNWANTED" ) ]]; then
     echo "lists already exist in $STACK — pass --force to overwrite" >&2
-    exit 1
+    exit 2
   fi
 
   pacman -Qqe | sort > "$WANTED"

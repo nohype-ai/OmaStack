@@ -12,8 +12,9 @@ Evolve your `wanted.txt` and `unwanted.txt` then reproduce that dream **stack** 
 curl -fsSL https://omastack.dev/install.sh | bash
 ```
 
-`~/.config/omastack/config.toml` stores the path to your stack folder.
-`wanted.txt` and `unwanted.txt` are created in that folder when they are missing.
+The installer asks for your stack folder and runs `omack init`.
+That writes `wanted.txt` and `unwanted.txt` in the stack folder.
+`~/.config/omastack/config.toml` stores the path to that folder.
 
 ## Usage
 
